@@ -1,4 +1,5 @@
 #!/bin/bash
+OCCI_CLIENT_VERSION="0.1"
 
 ##############################################################################
 #  Copyright 2012 
@@ -38,6 +39,47 @@ hash curl 2>&- || { echo >&2 "I require the curl binary but it's not installed. 
 hash dialog 2>&- || { echo >&2 "I require the dialog binary but it's not installed.  Aborting."; exit 1; }
 
 ##############################################################################
+# Handle options
+
+function usage {
+    cat <<_EOF_
+Usage: $0 [options] ...
+
+Options:
+-d, --debug           Echo all curl commands as they are executed
+-h, --help            Display this message and exit
+-V, --version         Display version and exit
+_EOF_
+}
+
+function version {
+    echo "BASH OCCI Client, version "$OCCI_CLIENT_VERSION
+}
+
+debug=no
+
+if ! options=$(getopt -o dhV -l debug,help,version -- "$@")
+then
+    # something went wrong, getopt will put out an error message for us
+    exit 1
+fi
+
+set -- $options
+
+while [ $# -gt 0 ]
+do
+    case $1 in
+    -d|--debug) debug="yes" ;;
+    -h|--help) usage;exit 0 ;; 
+    -V|--version) version;exit 0 ;;
+    (--) shift; break;;
+    (-*) echo "$0: error - unrecognized option $1" 1>&2; exit 1;;
+    (*) break;;
+    esac
+    shift
+done
+
+##############################################################################
 # Define reqular expressions for OCCI rendering
 # see OCCI HTTP Rendering at http://www.ogf.org/documents/GFD.185.pdf
 
@@ -57,77 +99,81 @@ declare -A categories
 declare -a entities
 
 ##############################################################################
-# OCCI Client User Interface
+# OCCI Client functionality
 
-# Ask for OCCI Endpoint to use
-exec 3>&1
-endpoints=($(dialog --backtitle "Bash OCCI Client" \
-                    --form "Specify Endpoints:" 22 76 16 \
-         "OCCI Endpoint URI:" 1 1 "http://localhost:3300/" 1 19 255 0 \
-         "CDMI Endpoint URI:" 2 1 "http://localhost:2364/" 2 19 255 0 \
+function select_occi_endpoint {
+    # Ask for OCCI Endpoint to use
+    endpoints=($(dialog --backtitle "Bash OCCI Client" \
+                        --form "Specify Endpoints:" 22 76 16 \
+        "OCCI Endpoint URI:" 1 1 "http://localhost:3300/" 1 19 255 0 \
+        "CDMI Endpoint URI:" 2 1 "http://localhost:2364/" 2 19 255 0 \
          2>&1 1>&3))
-exec 3>&-
+    exit_code=$?
+    OCCI_ENDPOINT="${endpoints[0]}"
+    return $exit_code
+}
 
-OCCI_ENDPOINT="${endpoints[0]}"
-CDMI_ENDPOINT="${endpoints[1]}"
-
-# Ask for Content-Type to use for requests
-exec 3>&1
-choice=($(dialog --backtitle "Bash OCCI Client" \
+function select_content_type {
+    # Ask for Content-Type to use for requests
+    choice=($(dialog --backtitle "Bash OCCI Client" \
                  --menu "Select Content-Type for requests:" 22 76 16 \
          1 "text/plain" \
          2 "text/occi" \
          3 "application/json" \
          2>&1 1>&3))
-exec 3>&-
+    exit_code=$?
+    case $choice in
+        1)
+            CONTENT_TYPE='text/plain'
+            ;;
+        2)
+            CONTENT_TYPE='text/occi'
+            ;;
+        3)
+            CONTENT_TYPE='application/json'
+            ;;
+    esac
+    return $exit_code
+}
 
-case $choice in
-    1)
-        CONTENT_TYPE='text/plain'
-        ;;
-    2)
-        CONTENT_TYPE='text/occi'
-        ;;
-    3)
-        CONTENT_TYPE='application/json'
-        ;;
-esac
+function select_accept {
+    # Ask for Accept MIME-Type to use for requests
+    choice=($(dialog --backtitle "Bash OCCI Client" \
+                --menu "Select Accept MIME-Type for requests:" 22 76 16 \
+           1 "text/plain" \
+           2 "text/occi" \
+           3 "application/json" \
+           2>&1 1>&3))
+    exit_code=$?
+    case $choice in
+        1)
+            ACCEPT='text/plain'
+            ;;
+        2)
+            ACCEPT='text/occi'
+            ;;
+        3)
+            ACCEPT='application/json'
+            ;;
+    esac
+    return $exit_code
+}
 
-# Ask for Accept MIME-Type to use for requests
-exec 3>&1
-choice=($(dialog --backtitle "Bash OCCI Client" \
-            --menu "Select Accept MIME-Type for requests:" 22 76 16 \
-       1 "text/plain" \
-       2 "text/occi" \
-       3 "application/json" \
-       2>&1 1>&3))
-exec 3>&-
-
-case $choice in
-    1)
-        ACCEPT='text/plain'
-        ;;
-    2)
-        ACCEPT='text/occi'
-        ;;
-    3)
-        ACCEPT='application/json'
-        ;;
-esac
-
-# initialize list of categories
-get_categories
-
-exec 3>&1
-choices=($(dialog --backtitle "Bash OCCI Client" \
-                  --menu "Select command to run:" 22 76 16 \
-          1 "Refresh categories"  \
-                    2 "Get entities" \
-       2>&1 1>&3))
-exec 3>&-
-
-for choice in $choices
-do
+function main_menu {
+    # initialize list of categories
+    get_categories
+    choices=($(dialog --backtitle "Bash OCCI Client" \
+                      --menu "Select command to run:" 22 76 16 \
+              1 "GET    - categories"  \
+              2 "GET    - entities" \
+              3 "POST   - create mixin" \
+              4 "POST   - create/update entity" \
+              5 "POST   - trigger action" \
+              6 "POST   - add mixin to resource" \
+              7 "PUT    - full update of a Mixin Collection" \
+              8 "PUT    - full update of a resource instance" \
+              9 "DELETE" \
+           2>&1 1>&3))
     case $choice in
         1)
             get_categories
@@ -135,23 +181,8 @@ do
         2)
             get_entities
             ;;
-        3)
-            crud_compute
-            ;;
-        4)
-            crud_compute_cdmi
-            ;;
-        5)
-            crud_template
-            ;;
-        6)
-            crud_compute_from_template
-            ;;
     esac
-done
-
-##############################################################################
-# OCCI Client functionality
+}
 
 function get_categories {
     curl_categories=$(curl -v -X GET "$OCCI_ENDPOINT-/" 2>&1)
@@ -189,7 +220,7 @@ function get_entities {
     while read -r line; do
         if [[ $line == http* ]]; then 
                         entities+=($line)
-                        dialog_entities+="$i \"$line\" "
+                        dialog_entities+="$i line "
                         i+=1
                 fi
     done <<< "$curl_entities"
@@ -212,3 +243,66 @@ function get_entities {
         # parse if 
     done <<< "$curl_entity"
 }
+
+##############################################################################
+# OCCI Client User Interface
+
+next_dialog="endpoint"
+
+while true; do 
+    case $next_dialog in
+        "endpoint" ) 
+            select_occi_endpoint
+            case $? in
+                0)
+                    next_dialog="content_type"
+                    ;;
+                *)
+                    next_dialog="exit"
+                    ;;
+            esac
+            ;;
+        "content_type")
+            select_content_type
+            case $? in
+                0)
+                    next_dialog="accept"
+                    ;;
+                1)
+                    next_dialog="endpoint"
+                    ;;
+                *)
+                    next_dialog="exit"
+                    ;;
+            esac
+            ;;
+        "accept")
+            select_accept
+            case $? in
+                0)
+                    next_dialog="main_menu"
+                    ;;
+                1)
+                    next_dialog="content_type"
+                    ;;
+                *)
+                    next_dialog="exit"
+                    ;;
+            esac
+            ;;
+        "main_menu")
+            main_menu 
+            case $? in
+                1)
+                    next_dialog="accept"
+                    ;;
+                *)
+                    next_dialog="exit"
+                    ;;
+            esac
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+done
