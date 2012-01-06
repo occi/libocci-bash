@@ -56,9 +56,10 @@ function version {
     echo "BASH OCCI Client, version "$OCCI_CLIENT_VERSION
 }
 
-debug=no
+debug=false
+occi_endpoint="http://localhost/"
 
-if ! options=$(getopt -o dhV -l debug,help,version -- "$@")
+if ! options=$(getopt -u -o dehV -l debug,endpoint,help,version -- "$@")
 then
     # something went wrong, getopt will put out an error message for us
     exit 1
@@ -69,7 +70,8 @@ set -- $options
 while [ $# -gt 0 ]
 do
     case $1 in
-    -d|--debug) debug="yes" ;;
+    -d|--debug) debug=true ;;
+    -e|--endpoint) occi_endpoint=$3 ;;
     -h|--help) usage;exit 0 ;; 
     -V|--version) version;exit 0 ;;
     (--) shift; break;;
@@ -85,9 +87,9 @@ done
 
 # regular expression for parsing category strings
 CATEGORY_REGEX='Category: *([^;]*); *scheme="([^"]*)"; *class="([^"]*)"; *(title="([^"]*)";)? *(rel="([^"]*)";)? *(location="([^"]*)";)? *(attributes="([^"]*)";)? *(actions="([^"]*)";)?'
-X_OCCI_ATTRIBUTE_REGEX=''
+X_OCCI_ATTRIBUTE_REGEX='X-OCCI-Attribute: *([^=]*)=(.*)'
 X_OCCI_LOCATION_REGEX=''
-LINK_REGEX='Link: *'
+LINK_REGEX='Link: *<([^>]*)>; *(rel="([^"]*);) *(self="([^"]*);)? *(category="([^"]*); *([^;]*))?'
 
 ##############################################################################
 # Global variables
@@ -105,11 +107,11 @@ function select_occi_endpoint {
     # Ask for OCCI Endpoint to use
     endpoints=($(dialog --backtitle "Bash OCCI Client" \
                         --form "Specify Endpoints:" 22 76 16 \
-        "OCCI Endpoint URI:" 1 1 "http://localhost:3300/" 1 19 255 0 \
+        "OCCI Endpoint URI:" 1 1 $occi_endpoint 1 19 255 0 \
         "CDMI Endpoint URI:" 2 1 "http://localhost:2364/" 2 19 255 0 \
          2>&1 1>&3))
     exit_code=$?
-    OCCI_ENDPOINT="${endpoints[0]}"
+    occi_endpoint=${endpoints[0]}
     return $exit_code
 }
 
@@ -162,33 +164,39 @@ function select_accept {
 function main_menu {
     # initialize list of categories
     get_categories
-    choices=($(dialog --backtitle "Bash OCCI Client" \
-                      --menu "Select command to run:" 22 76 16 \
-              1 "GET    - categories"  \
-              2 "GET    - entities" \
-              3 "POST   - create mixin" \
-              4 "POST   - create/update entity" \
-              5 "POST   - trigger action" \
-              6 "POST   - add mixin to resource" \
-              7 "PUT    - full update of a Mixin Collection" \
-              8 "PUT    - full update of a resource instance" \
-              9 "DELETE" \
-           2>&1 1>&3))
-    case $choice in
-        1)
-            get_categories
-            ;;
-        2)
-            get_entities
-            ;;
-    esac
+    while true; do
+        choice=($(dialog --backtitle "Bash OCCI Client" \
+                          --menu "Select command to run:" 22 76 16 \
+                  1 "GET    - categories"  \
+                  2 "GET    - entities" \
+                  3 "POST   - create mixin" \
+                  4 "POST   - create/update entity" \
+                  5 "POST   - trigger action" \
+                  6 "POST   - add mixin to resource" \
+                  7 "PUT    - full update of a Mixin Collection" \
+                  8 "PUT    - full update of a resource instance" \
+                  9 "DELETE" \
+               2>&1 1>&3))
+        exit_code=$?
+        if [[ $exit_code != 0 ]]; then return $exit_code; fi
+        case $choice in
+            1)
+                get_categories
+                ;;
+            2)
+                get_entities
+                ;;
+        esac
+    done
 }
 
 function get_categories {
-    curl_categories=$(curl -v -X GET "$OCCI_ENDPOINT-/" 2>&1)
+    curl_categories=$(curl -v -X GET "$occi_endpoint-/" 2>&1)
+    if $debug; then
     dialog --backtitle "Bash OCCI Client" \
            --scrollbar \
            --msgbox "$curl_categories" 22 76
+    fi
     while read -r line; do
        [[ $line =~ $CATEGORY_REGEX ]]
        term=${BASH_REMATCH[1]}
@@ -207,41 +215,67 @@ function get_categories {
            categories[$term]=${category[@]}
        fi
     done <<< "$curl_categories"
-    
     }
 
 function get_entities {
-    curl_entities=$(curl -v -X GET --header "Accept: text/uri-list" -w "\n" "$OCCI_ENDPOINT" 2>&1)
-        dialog_entities=""
+    curl_entities=$(curl -v -X GET --header "Accept: text/uri-list" -w "\n" "$occi_endpoint" 2>&1)
+    dialog_entities=""
+    if $debug; then
     dialog --backtitle "Bash OCCI Client" \
        --scrollbar \
        --msgbox "$curl_entities" 22 76
-        declare -i i=0
+    fi
+    declare -i i=1
     while read -r line; do
         if [[ $line == http* ]]; then 
-                        entities+=($line)
-                        dialog_entities+="$i line "
-                        i+=1
-                fi
+            entities+=($line)
+            dialog_entities+="$i $line "
+            i+=1
+        fi
     done <<< "$curl_entities"
 
-        exec 3>&1
-        choice=($(dialog --backtitle "Bash OCCI Client" \
-           --menu "Select entity to show details:" 22 76 16 \
+    choice=($(dialog --backtitle "Bash OCCI Client" \
+                     --menu "Select entity to show details:" 22 76 16 \
                      $dialog_entities \
-               2>&1 1>&3))
-    exec 3>&-
+                     2>&1 1>&3))
 
-    curl_entity=$(curl -v -X GET --header "Accept: $ACCEPT" -w "\n" "${entities[$choice]}" 2>&1)
+    show_entity_details ${entities[$choice]}
+}
+
+function show_entity_details {
+    curl_entity=$(curl -v -X GET --header "Accept: $ACCEPT" -w "\n" $1 2>&1)
     dialog --backtitle "Bash OCCI Client" \
-       --scrollbar \
-       --msgbox "$curl_entity" 22 76
+           --scrollbar \
+           --msgbox "$curl_entity" 22 76
+
+    declare -a entity_categories
+    declare -a entity_attributes
+    declare -a entity_links
 
     while read -r line; do
         # parse if category string
         [[ $line =~ $CATEGORY_REGEX ]]
-        # parse if 
+        if [[ -n ${BASH_REMATCH[0]} ]]; then 
+            entity_categories+=(${categories[${BASH_REMATCH[1]}]})
+        fi
+        # parse if link
+        [[ $line =~ $LINK_REGEX ]]
+        if [[ -n ${BASH_REMATCH[0]} ]]; then echo ${BASH_REMATCH[0]};fi
+        # parse if X-OCCI-Attribute
+        [[ $line =~ $X_OCCI_ATTRIBUTE_REGEX ]]
+        if [[ -n ${BASH_REMATCH[0]} ]]; then 
+            declare -A entity_attribute
+            entity_attribute[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
+            entity_attributes+=(entity_attribute)
+        fi
+        # parse if X_OCCI_Location
+        [[ $line =~ $X_OCCI_LOCATION_REGEX ]]
+        if [[ -n ${BASH_REMATCH[0]} ]]; then echo ${BASH_REMATCH[0]};fi
     done <<< "$curl_entity"
+
+    dialog --backtitle "Bash OCCI Client" \
+           --scrollbar \
+           --msgbox "${entity_categories[0]}" 22 76
 }
 
 ##############################################################################
@@ -302,6 +336,7 @@ while true; do
             esac
             ;;
         *)
+            clear
             exit 0
             ;;
     esac
