@@ -24,6 +24,60 @@ OCCI_CLIENT_VERSION="0.1"
 ##############################################################################
 
 ##############################################################################
+# Initialize client configuration
+
+DEBUG=false
+GUI=true
+OCCI_ENDPOINT="http://localhost/"
+CONTENT_TYPE="text/plain"
+ACCEPT="text/plain"
+
+##############################################################################
+# Handle options
+
+function usage {
+    cat <<_EOF_
+Usage: $0 [options] ...
+
+Options:
+-d, --DEBUG           Echo all curl commands after they are executed
+-e, --endpoint        Specify OCCI endpoint
+-g, --gui             Use GUI mode (default)
+-h, --help            Display this message and exit
+-t, --text            Use text mode
+-V, --version         Display version and exit
+_EOF_
+}
+
+function version {
+    echo "BASH OCCI Client, version "$OCCI_CLIENT_VERSION
+}
+
+if ! options=$(getopt -u -o dehV -l DEBUG,endpoint,help,version -- "$@")
+then
+    # something went wrong, getopt will put out an error message for us
+    exit 1
+fi
+
+set -- $options
+
+while [ $# -gt 0 ]
+do
+    case $1 in
+    -d|--DEBUG) DEBUG=true ;;
+    -e|--endpoint) OCCI_ENDPOINT=$3 ;;
+    -g|--gui) GUI=true ;;
+    -h|--help) usage;exit 0 ;; 
+    -t|--text) GUI=false ;;
+    -V|--version) version;exit 0 ;;
+    (--) shift; break;;
+    (-*) echo "$0: error - unrecognized option $1" 1>&2; exit 1;;
+    (*) break;;
+    esac
+    shift
+done
+
+##############################################################################
 # Check if required tools are available
 
 # test if bash is at least version 4
@@ -36,50 +90,9 @@ fi
 hash curl 2>&- || { echo >&2 "I require the curl binary but it's not installed.  Aborting."; exit 1; }
 
 # test if dialog is installed
-hash dialog 2>&- || { echo >&2 "I require the dialog binary but it's not installed.  Aborting."; exit 1; }
-
-##############################################################################
-# Handle options
-
-function usage {
-    cat <<_EOF_
-Usage: $0 [options] ...
-
-Options:
--d, --debug           Echo all curl commands as they are executed
--h, --help            Display this message and exit
--V, --version         Display version and exit
-_EOF_
-}
-
-function version {
-    echo "BASH OCCI Client, version "$OCCI_CLIENT_VERSION
-}
-
-debug=false
-occi_endpoint="http://localhost/"
-
-if ! options=$(getopt -u -o dehV -l debug,endpoint,help,version -- "$@")
-then
-    # something went wrong, getopt will put out an error message for us
-    exit 1
+if $GUI; then
+    hash dialog 2>&- || { echo >&2 "I require the dialog binary for GUI functionality, but it's not installed. Falling back to text mode.."; $GUI=false; }
 fi
-
-set -- $options
-
-while [ $# -gt 0 ]
-do
-    case $1 in
-    -d|--debug) debug=true ;;
-    -e|--endpoint) occi_endpoint=$3 ;;
-    -h|--help) usage;exit 0 ;; 
-    -V|--version) version;exit 0 ;;
-    (--) shift; break;;
-    (-*) echo "$0: error - unrecognized option $1" 1>&2; exit 1;;
-    (*) break;;
-    esac
-    shift
-done
 
 ##############################################################################
 # Define reqular expressions for OCCI rendering
@@ -103,15 +116,20 @@ declare -a entities
 ##############################################################################
 # OCCI Client functionality
 
+function config {
+    select_occi_endpoint
+    select_content_type
+    select_accept
+}
+
 function select_occi_endpoint {
     # Ask for OCCI Endpoint to use
     endpoints=($(dialog --backtitle "Bash OCCI Client" \
                         --form "Specify Endpoints:" 22 76 16 \
-        "OCCI Endpoint URI:" 1 1 $occi_endpoint 1 19 255 0 \
-        "CDMI Endpoint URI:" 2 1 "http://localhost:2364/" 2 19 255 0 \
+        "OCCI Endpoint URI:" 1 1 $OCCI_ENDPOINT 1 19 255 0 \
          2>&1 1>&3))
     exit_code=$?
-    occi_endpoint=${endpoints[0]}
+    OCCI_ENDPOINT=${endpoints[0]}
     return $exit_code
 }
 
@@ -141,7 +159,7 @@ function select_content_type {
 function select_accept {
     # Ask for Accept MIME-Type to use for requests
     choice=($(dialog --backtitle "Bash OCCI Client" \
-                --menu "Select Accept MIME-Type for requests:" 22 76 16 \
+                     --menu "Select Accept MIME-Type for requests:" 22 76 16 \
            1 "text/plain" \
            2 "text/occi" \
            3 "application/json" \
@@ -161,41 +179,16 @@ function select_accept {
     return $exit_code
 }
 
-function main_menu {
-    # initialize list of categories
-    get_categories
-    while true; do
-        choice=($(dialog --backtitle "Bash OCCI Client" \
-                          --menu "Select command to run:" 22 76 16 \
-                  1 "GET    - categories"  \
-                  2 "GET    - entities" \
-                  3 "POST   - create mixin" \
-                  4 "POST   - create/update entity" \
-                  5 "POST   - trigger action" \
-                  6 "POST   - add mixin to resource" \
-                  7 "PUT    - full update of a Mixin Collection" \
-                  8 "PUT    - full update of a resource instance" \
-                  9 "DELETE" \
-               2>&1 1>&3))
-        exit_code=$?
-        if [[ $exit_code != 0 ]]; then return $exit_code; fi
-        case $choice in
-            1)
-                get_categories
-                ;;
-            2)
-                get_entities
-                ;;
-        esac
-    done
-}
-
 function get_categories {
-    curl_categories=$(curl -v -X GET "$occi_endpoint-/" 2>&1)
-    if $debug; then
-    dialog --backtitle "Bash OCCI Client" \
-           --scrollbar \
-           --msgbox "$curl_categories" 22 76
+    curl_categories=$(curl -v -X GET "$OCCI_ENDPOINT-/" 2>&1)
+    if $DEBUG; then
+        if $GUI;then
+            dialog --backtitle "Bash OCCI Client" \
+                   --scrollbar \
+                   --msgbox "$curl_categories" 22 76
+        else
+            echo $curl_categories
+        fi
     fi
     while read -r line; do
        [[ $line =~ $CATEGORY_REGEX ]]
@@ -218,9 +211,9 @@ function get_categories {
     }
 
 function get_entities {
-    curl_entities=$(curl -v -X GET --header "Accept: text/uri-list" -w "\n" "$occi_endpoint" 2>&1)
+    curl_entities=$(curl -v -X GET --header "Accept: text/uri-list" -w "\n" "$OCCI_ENDPOINT" 2>&1)
     dialog_entities=""
-    if $debug; then
+    if $DEBUG; then
     dialog --backtitle "Bash OCCI Client" \
        --scrollbar \
        --msgbox "$curl_entities" 22 76
@@ -239,17 +232,21 @@ function get_entities {
                      $dialog_entities \
                      2>&1 1>&3))
 
-    show_entity_details ${entities[$choice]}
+    if [[ -n $choice ]]; then
+       show_entity_details ${entities[$choice]}
+    fi  
 }
 
 function show_entity_details {
     curl_entity=$(curl -v -X GET --header "Accept: $ACCEPT" -w "\n" $1 2>&1)
-    dialog --backtitle "Bash OCCI Client" \
-           --scrollbar \
-           --msgbox "$curl_entity" 22 76
+    if $DEBUG; then
+        dialog --backtitle "Bash OCCI Client" \
+               --scrollbar \
+               --msgbox "$curl_entity" 22 76
+    fi
 
     declare -a entity_categories
-    declare -a entity_attributes
+    declare -A entity_attributes
     declare -a entity_links
 
     while read -r line; do
@@ -264,80 +261,59 @@ function show_entity_details {
         # parse if X-OCCI-Attribute
         [[ $line =~ $X_OCCI_ATTRIBUTE_REGEX ]]
         if [[ -n ${BASH_REMATCH[0]} ]]; then 
-            declare -A entity_attribute
-            entity_attribute[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
-            entity_attributes+=(entity_attribute)
+            entity_attributes[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
+            [[ $entity_rendering_length -lt ${#BASH_REMATCH[2]} ]] && entity_rendering_length=${#BASH_REMATCH[2]}
         fi
         # parse if X_OCCI_Location
         [[ $line =~ $X_OCCI_LOCATION_REGEX ]]
-        if [[ -n ${BASH_REMATCH[0]} ]]; then echo ${BASH_REMATCH[0]};fi
     done <<< "$curl_entity"
+
+    for key in "${!entity_attributes[@]}"; do
+        entity_rendering+=$(printf "%${entity_rendering_length}s: %s" "$key" "${entity_attributes[$key]}")"\n"
+    done
 
     dialog --backtitle "Bash OCCI Client" \
            --scrollbar \
-           --msgbox "${entity_categories[0]}" 22 76
+           --msgbox "$entity_rendering" 22 76
+}
+
+function main_menu {
+    # initialize list of categories
+    get_categories
+    while true; do
+        choice=($(dialog --backtitle "Bash OCCI Client" \
+                         --cancel-label "Exit" \
+                         --menu "Select command to run:" 22 76 16 \
+                  A "Configure OCCI Client" \
+                  B "GET    - categories"  \
+                  C "GET    - entities" \
+                  D "GET    - entity" \
+                  E "POST   - create mixin" \
+                  F "POST   - create/update entity" \
+                  G "POST   - trigger action" \
+                  H "POST   - add mixin to resource" \
+                  I "PUT    - full update of a Mixin Collection" \
+                  J "PUT    - full update of a resource instance" \
+                  K "DELETE - entity" \
+                  L "DELETE - user defined mixin" \
+                  M "DELETE - " \
+               2>&1 1>&3))
+        exit_code=$?
+        if [[ $exit_code != 0 ]]; then return $exit_code; fi
+        case $choice in
+            A)
+                config ;;
+            B)
+                get_categories ;;
+            C)
+                get_entities ;;
+        esac
+    done
 }
 
 ##############################################################################
 # OCCI Client User Interface
 
-next_dialog="endpoint"
-
-while true; do 
-    case $next_dialog in
-        "endpoint" ) 
-            select_occi_endpoint
-            case $? in
-                0)
-                    next_dialog="content_type"
-                    ;;
-                *)
-                    next_dialog="exit"
-                    ;;
-            esac
-            ;;
-        "content_type")
-            select_content_type
-            case $? in
-                0)
-                    next_dialog="accept"
-                    ;;
-                1)
-                    next_dialog="endpoint"
-                    ;;
-                *)
-                    next_dialog="exit"
-                    ;;
-            esac
-            ;;
-        "accept")
-            select_accept
-            case $? in
-                0)
-                    next_dialog="main_menu"
-                    ;;
-                1)
-                    next_dialog="content_type"
-                    ;;
-                *)
-                    next_dialog="exit"
-                    ;;
-            esac
-            ;;
-        "main_menu")
-            main_menu 
-            case $? in
-                1)
-                    next_dialog="accept"
-                    ;;
-                *)
-                    next_dialog="exit"
-                    ;;
-            esac
-            ;;
-        *)
-            clear
-            exit 0
-            ;;
-    esac
-done
+exec 3>&1
+main_menu
+exec 3>&-
